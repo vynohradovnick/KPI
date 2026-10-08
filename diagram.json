@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "author": "StageCue",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "board-st-nucleo-c031c6",
+      "id": "nucleo",
+      "top": 0,
+      "left": 0,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-logic-analyzer",
+      "id": "logic",
+      "top": 20,
+      "left": 280,
+      "attrs": {}
+    }
+  ],
+  "connections": [
+    [
+      "$serialMonitor:TX",
+      "nucleo:PA3",
+      "",
+      []
+    ],
+    [
+      "$serialMonitor:RX",
+      "nucleo:PA2",
+      "",
+      []
+    ],
+    [
+      "logic:GND",
+      "nucleo:GND.1",
+      "black",
+      []
+    ],
+    [
+      "logic:D0",
+      "nucleo:PA5",
+      "green",
+      []
+    ],
+    [
+      "logic:D1",
+      "nucleo:PA2",
+      "blue",
+      []
+    ]
+  ],
+  "dependencies": {}
+}
