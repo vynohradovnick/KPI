@@ -16,6 +16,50 @@
       "top": 20,
       "left": 280,
       "attrs": {}
+    },
+    {
+      "type": "wokwi-mpu6050",
+      "id": "imu",
+      "top": -125,
+      "left": 270,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-photoresistor-sensor",
+      "id": "ldr",
+      "top": 180,
+      "left": -145,
+      "attrs": {
+        "lux": "250"
+      }
+    },
+    {
+      "type": "wokwi-pir-motion-sensor",
+      "id": "pir",
+      "top": -110,
+      "left": -175,
+      "attrs": {
+        "delayTime": "2",
+        "inhibitTime": "1"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "sclpull",
+      "top": -60,
+      "left": 200,
+      "attrs": {
+        "value": "4700"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "sdapull",
+      "top": -20,
+      "left": 200,
+      "attrs": {
+        "value": "4700"
+      }
     }
   ],
   "connections": [
@@ -47,6 +91,114 @@
       "logic:D1",
       "nucleo:PA2",
       "blue",
+      []
+    ],
+    [
+      "imu:VCC",
+      "nucleo:3V3.1",
+      "red",
+      []
+    ],
+    [
+      "imu:GND",
+      "nucleo:GND.1",
+      "black",
+      []
+    ],
+    [
+      "imu:SCL",
+      "nucleo:PB8",
+      "yellow",
+      []
+    ],
+    [
+      "imu:SDA",
+      "nucleo:PB9",
+      "green",
+      []
+    ],
+    [
+      "ldr:VCC",
+      "nucleo:3V3.1",
+      "red",
+      []
+    ],
+    [
+      "ldr:GND",
+      "nucleo:GND.1",
+      "black",
+      []
+    ],
+    [
+      "ldr:AO",
+      "nucleo:PA0",
+      "orange",
+      []
+    ],
+    [
+      "pir:VCC",
+      "nucleo:5V.1",
+      "red",
+      []
+    ],
+    [
+      "pir:GND",
+      "nucleo:GND.1",
+      "black",
+      []
+    ],
+    [
+      "pir:OUT",
+      "nucleo:PA8",
+      "purple",
+      []
+    ],
+    [
+      "logic:D2",
+      "nucleo:PB8",
+      "yellow",
+      []
+    ],
+    [
+      "logic:D3",
+      "nucleo:PB9",
+      "green",
+      []
+    ],
+    [
+      "logic:D4",
+      "nucleo:PA8",
+      "purple",
+      []
+    ],
+    [
+      "logic:D5",
+      "nucleo:PA1",
+      "orange",
+      []
+    ],
+    [
+      "sclpull:1",
+      "nucleo:3V3.1",
+      "red",
+      []
+    ],
+    [
+      "sclpull:2",
+      "nucleo:PB8",
+      "yellow",
+      []
+    ],
+    [
+      "sdapull:1",
+      "nucleo:3V3.1",
+      "red",
+      []
+    ],
+    [
+      "sdapull:2",
+      "nucleo:PB9",
+      "yellow",
       []
     ]
   ],

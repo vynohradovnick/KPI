@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "stage_probe.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -107,23 +108,10 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
-  printf("StageCue bring-up | Nucleo-C031C6 | USART2 115200 8N1\r\n");
-  uint32_t blink_number = 0;
-
+  stage_probe_run(&hi2c1, &huart2);
   /* USER CODE END 2 */
-
-  /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
   while (1)
   {
-    /* USER CODE END WHILE */
-
-    /* USER CODE BEGIN 3 */
-    HAL_Delay(1000);
-    HAL_GPIO_TogglePin(Led_GPIO_Port, Led_Pin);
-    printf("tick %lu t_ms=%lu led=%s\r\n",
-           (unsigned long)++blink_number, (unsigned long)HAL_GetTick(),
-           HAL_GPIO_ReadPin(Led_GPIO_Port, Led_Pin) == GPIO_PIN_SET ? "on" : "off");
   }
   /* USER CODE END 3 */
 }
