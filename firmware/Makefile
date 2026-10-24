@@ -38,6 +38,7 @@ BUILD_DIR = build
 C_SOURCES =  \
 Core/Src/main.c \
 Core/Src/stage_inputs.c \
+Core/Src/stage_imu.c \
 Core/Src/stage_bus.c \
 Core/Src/stage_probe.c \
 Drivers/STM32C0xx_HAL_Driver/Src/stm32c0xx_hal_adc.c \

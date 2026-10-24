@@ -1,0 +1,28 @@
+name: StageCue Lab 2
+
+on:
+  pull_request:
+  push:
+    branches: [lab2]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Build STM32 firmware in Docker
+        run: make build
+      - name: Run host tests
+        run: make test
+      - name: Install coverage tools
+        run: sudo apt-get update && sudo apt-get install -y clang llvm libclang-rt-dev
+      - name: Measure host coverage
+        run: make coverage
+        env:
+          COV_CC: /usr/bin/clang
+          LLVM_PROFDATA: /usr/bin/llvm-profdata
+          LLVM_COV: /usr/bin/llvm-cov

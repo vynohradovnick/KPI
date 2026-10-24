@@ -1,20 +1,13 @@
 #include "stage_probe.h"
 #include "stage_inputs.h"
 #include "stage_bus.h"
+#include "stage_imu.h"
 #include <stdio.h>
 #include <string.h>
 
 #define MPU_ADDRESS 0x68U
 #define PIR_PIN GPIO_PIN_8
 #define ADC_MARK GPIO_PIN_1
-
-typedef struct {
-    bool ready;
-    uint8_t who;
-    int32_t accel[3];
-    int32_t gyro[3];
-    uint32_t errors;
-} StageImu;
 
 static ADC_HandleTypeDef adc;
 
@@ -59,30 +52,6 @@ static bool adc_read(uint16_t *raw)
     }
     HAL_GPIO_WritePin(GPIOA, ADC_MARK, GPIO_PIN_RESET);
     return ok;
-}
-
-static bool imu_read(StageImu *imu, uint8_t address)
-{
-    if (!imu->ready) {
-        uint8_t who = 0;
-        if (!stage_bus_read(address, 0x75U, &who, 1U) ||
-            who != 0x68U ||
-            !stage_bus_write(address, 0x6BU, 1U)) {
-            return false;
-        }
-        imu->who = who;
-        imu->ready = true;
-    }
-    uint8_t frame[14];
-    if (!stage_bus_read(address, 0x3BU, frame, sizeof frame)) {
-        imu->ready = false;
-        return false;
-    }
-    for (unsigned i = 0; i < 3U; ++i) {
-        imu->accel[i] = stage_accel_mg(&frame[2U * i]);
-        imu->gyro[i] = stage_gyro_mdps(&frame[8U + 2U * i]);
-    }
-    return true;
 }
 
 static bool due(uint32_t now, uint32_t target)
@@ -167,7 +136,7 @@ void stage_probe_run(I2C_HandleTypeDef *bus, UART_HandleTypeDef *uart)
         }
         if (due(now, i2c_at)) {
             bool previous = imu.ready;
-            if (imu_read(&imu, fault ? MPU_ADDRESS + 1U : MPU_ADDRESS)) {
+            if (stage_imu_read(&imu, fault ? MPU_ADDRESS + 1U : MPU_ADDRESS)) {
                 i2c_at = now + 20U;
                 if (!previous) {
                     printf("IMU ready t_ms=%lu who=0x%02x\r\n", (unsigned long)now, imu.who);

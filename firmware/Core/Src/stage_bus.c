@@ -1,44 +1,8 @@
-#include "main.h"
 #include "stage_bus.h"
-
-#define SCL GPIO_PIN_8
-#define SDA GPIO_PIN_9
+#include "stage_bus_pins.h"
 
 enum { BUS_OK, BUS_NACK, BUS_CLOCK_LOW, BUS_DATA_LOW };
 static uint32_t error;
-
-static void half_period(void)
-{
-    const uint32_t start = SysTick->VAL;
-    const uint32_t reload = SysTick->LOAD + 1U;
-    const uint32_t cycles = SystemCoreClock / 200000U;
-    uint32_t elapsed;
-    do {
-        const uint32_t now = SysTick->VAL;
-        elapsed = start >= now ? start - now : start + reload - now;
-    } while (elapsed < cycles);
-}
-
-static uint32_t output_mode(uint32_t pins)
-{
-    return ((pins & SCL) << 8) | ((pins & SDA) << 9);
-}
-
-static void drive_low(uint32_t pins)
-{
-    GPIOB->BSRR = pins << 16;
-    GPIOB->MODER |= output_mode(pins);
-}
-
-static void release(uint32_t pins)
-{
-    GPIOB->MODER &= ~output_mode(pins);
-}
-
-static bool high(uint32_t pin)
-{
-    return (GPIOB->IDR & pin) != 0U;
-}
 
 static bool raise_clock(void)
 {
@@ -156,11 +120,7 @@ static bool begin_transfer(void)
 
 void stage_bus_init(void)
 {
-    GPIO_InitTypeDef config = {
-        .Pin = SCL | SDA, .Mode = GPIO_MODE_INPUT, .Pull = GPIO_PULLUP
-    };
-    GPIOB->BSRR = (SCL | SDA) << 16;
-    HAL_GPIO_Init(GPIOB, &config);
+    init_pins();
 }
 
 bool stage_bus_read(uint8_t address, uint8_t reg, uint8_t *data, size_t size)
