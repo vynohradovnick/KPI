@@ -40,6 +40,7 @@ Core/Src/main.c \
 Core/Src/stage_inputs.c \
 Core/Src/stage_bus.c \
 Core/Src/stage_probe.c \
+Core/Src/stage_journal.c \
 Drivers/STM32C0xx_HAL_Driver/Src/stm32c0xx_hal_adc.c \
 Drivers/STM32C0xx_HAL_Driver/Src/stm32c0xx_hal_adc_ex.c \
 Core/Src/stm32c0xx_it.c \
@@ -127,9 +128,9 @@ C_INCLUDES =  \
 
 
 # compile gcc flags
-ASFLAGS = $(MCU) $(AS_DEFS) $(AS_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections
+ASFLAGS = $(MCU) $(AS_DEFS) $(AS_INCLUDES) $(OPT) -Wall -fstack-usage -fdata-sections -ffunction-sections
 
-CFLAGS += $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections
+CFLAGS += $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fstack-usage -fdata-sections -ffunction-sections
 
 ifeq ($(DEBUG), 1)
 CFLAGS += -g -gdwarf-2
