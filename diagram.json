@@ -200,6 +200,18 @@
       "nucleo:PB9",
       "yellow",
       []
+    ],
+    [
+      "logic:D6",
+      "nucleo:PA6",
+      "brown",
+      []
+    ],
+    [
+      "logic:D7",
+      "nucleo:PA7",
+      "cyan",
+      []
     ]
   ],
   "dependencies": {}
