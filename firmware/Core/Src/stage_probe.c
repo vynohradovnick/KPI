@@ -1,6 +1,7 @@
 #include "stage_probe.h"
 #include "stage_inputs.h"
 #include "stage_bus.h"
+#include "stage_journal.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -85,53 +86,263 @@ static bool imu_read(StageImu *imu, uint8_t address)
     return true;
 }
 
+typedef struct {
+    uint32_t target_ms;
+    uint32_t period_ms;
+    uint32_t count;
+    uint32_t missed;
+    uint32_t max_late_ms;
+    uint16_t max_us;
+} StageTask;
+
+typedef enum { WAITING, SHOWING, MOVING, SETTLING } StageMode;
+
+typedef struct {
+    StageMode mode;
+    StageLight light;
+    StageMotion motion;
+    StageImu imu;
+    uint32_t end_ms;
+    uint32_t storage_errors;
+    uint32_t journal_cursor;
+    uint32_t journal_stop;
+    uint16_t light_raw;
+    uint16_t light_median;
+    uint8_t mount_streak;
+    bool mount;
+    bool fault;
+} StageDesk;
+
+static const char *const mode_name[] = {"wait", "show", "move", "settling"};
+static volatile uint8_t serial_rx[128];
+static volatile uint8_t serial_write;
+static volatile uint8_t serial_read;
+static volatile uint32_t serial_drops;
+static volatile bool serial_gap;
+
+void USART2_IRQHandler(void)
+{
+    if ((USART2->ISR & USART_ISR_ORE) != 0U) {
+        USART2->ICR = USART_ICR_ORECF;
+        ++serial_drops;
+        serial_gap = true;
+    }
+    if ((USART2->ISR & USART_ISR_RXNE_RXFNE) != 0U) {
+        uint8_t data = (uint8_t)USART2->RDR;
+        const uint8_t next = (serial_write + 1U) % sizeof serial_rx;
+        if (next == serial_read) {
+            ++serial_drops;
+            serial_gap = true;
+        } else {
+            serial_rx[serial_write] = data;
+            serial_write = next;
+        }
+    }
+}
+
+static void timebase_init(void)
+{
+    __HAL_RCC_TIM3_CLK_ENABLE();
+    TIM3->PSC = SystemCoreClock / 1000000U - 1U;
+    TIM3->ARR = 0xffffU;
+    TIM3->EGR = TIM_EGR_UG;
+    TIM3->CR1 = TIM_CR1_CEN;
+}
+
+static uint16_t micros(void)
+{
+    return (uint16_t)TIM3->CNT;
+}
+
 static bool due(uint32_t now, uint32_t target)
 {
     return (int32_t)(now - target) >= 0;
 }
 
-static void probe_command(UART_HandleTypeDef *uart, bool *fault)
+static bool release_task(StageTask *task, uint32_t now)
 {
-    static char command[20];
-    static uint8_t used;
-    static bool overlong;
-    if (__HAL_UART_GET_FLAG(uart, UART_FLAG_ORE)) {
-        __HAL_UART_CLEAR_OREFLAG(uart);
-        overlong = true;
+    if (!due(now, task->target_ms)) {
+        return false;
     }
-    if (!__HAL_UART_GET_FLAG(uart, UART_FLAG_RXNE)) {
-        return;
+    const uint32_t late = now - task->target_ms;
+    const uint32_t skipped = late / task->period_ms;
+    if (late > task->max_late_ms) {
+        task->max_late_ms = late;
     }
-    const char c = (char)uart->Instance->RDR;
-    if (c != '\r' && c != '\n') {
-        if (used < sizeof command - 1U) {
+    task->missed += skipped;
+    task->target_ms += (skipped + 1U) * task->period_ms;
+    ++task->count;
+    return true;
+}
+
+static void record_duration(StageTask *task, uint16_t start)
+{
+    const uint16_t elapsed = micros() - start;
+    if (elapsed > task->max_us) {
+        task->max_us = elapsed;
+    }
+}
+
+static void record_event(StageDesk *desk, uint32_t now, enum StageEvent event)
+{
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);
+    const bool stored = stage_journal_append(now, event);
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET);
+    if (!stored) {
+        ++desk->storage_errors;
+    }
+    printf("event=%u t_ms=%lu stored=%u\r\n", event, (unsigned long)now, stored);
+}
+
+static void status_line(const StageDesk *desk, uint32_t now)
+{
+    printf("t_ms=%lu mode=%s pir=%u adc=%u med=%u dim=%u imu=%s mount=%u "
+           "a_mg=%ld,%ld,%ld log_err=%lu rx_drop=%lu\r\n",
+           (unsigned long)now, mode_name[desk->mode], desk->motion.level,
+           desk->light_raw, desk->light_median, desk->light.dim,
+           desk->imu.ready ? "ok" : "stale", desk->mount,
+           (long)desk->imu.accel[0], (long)desk->imu.accel[1], (long)desk->imu.accel[2],
+           (unsigned long)desk->storage_errors, (unsigned long)serial_drops);
+}
+
+static void task_line(const char *name, const StageTask *task)
+{
+    printf("task=%s n=%lu miss=%lu late_max_ms=%lu work_max_us=%u\r\n",
+           name, (unsigned long)task->count, (unsigned long)task->missed,
+           (unsigned long)task->max_late_ms, task->max_us);
+}
+
+static void handle_command(StageDesk *desk, const char *command, uint32_t now,
+                           const StageTask *pir, const StageTask *ldr, const StageTask *imu)
+{
+    if (strcmp(command, "status") == 0) {
+        status_line(desk, now);
+    } else if (strcmp(command, "move on") == 0) {
+        desk->mode = MOVING;
+        desk->mount = false;
+        desk->mount_streak = 0;
+        record_event(desk, now, STAGE_MOVE);
+    } else if (strcmp(command, "move off") == 0 && desk->mode == MOVING) {
+        desk->mode = SETTLING;
+        desk->mount_streak = 0;
+        puts("OK settling\r");
+    } else if (strcmp(command, "log") == 0) {
+        desk->journal_stop = stage_journal_latest();
+        desk->journal_cursor = desk->journal_stop > 255U ? desk->journal_stop - 255U : 1U;
+        printf("log begin last=%lu\r\n", (unsigned long)desk->journal_stop);
+    } else if (strcmp(command, "metrics") == 0) {
+        task_line("pir", pir);
+        task_line("ldr", ldr);
+        task_line("imu", imu);
+    } else if (strcmp(command, "i2c fault") == 0) {
+        desk->fault = true;
+        puts("OK fixture 0x69\r");
+    } else if (strcmp(command, "i2c restore") == 0) {
+        desk->fault = false;
+        puts("OK fixture 0x68\r");
+    } else if (strcmp(command, "reset") == 0) {
+        NVIC_SystemReset();
+    } else {
+        puts("ERR command\r");
+    }
+}
+
+static void service_rx(StageDesk *desk, uint32_t now, const StageTask *pir,
+                       const StageTask *ldr, const StageTask *imu)
+{
+    static char command[32];
+    static unsigned used;
+    static bool discard;
+    if (serial_gap) {
+        __disable_irq();
+        serial_gap = false;
+        serial_read = serial_write;
+        __enable_irq();
+        used = 0;
+        discard = true;
+    }
+    for (unsigned budget = 0; budget < 16U && serial_read != serial_write; ++budget) {
+        const char c = (char)serial_rx[serial_read];
+        serial_read = (serial_read + 1U) % sizeof serial_rx;
+        if (c == '\r' || c == '\n') {
+            if (discard) {
+                puts("ERR line\r");
+            } else if (used != 0U) {
+                command[used] = '\0';
+                handle_command(desk, command, now, pir, ldr, imu);
+            }
+            used = 0;
+            discard = false;
+            return;
+        }
+        if (c < ' ' || c > '~' || used == sizeof command - 1U) {
+            discard = true;
+        } else if (!discard) {
             command[used++] = c;
-        } else {
-            overlong = true;
         }
+    }
+}
+
+static void service_log(StageDesk *desk)
+{
+    if (desk->journal_cursor == 0U) {
         return;
     }
-    if (used || overlong) {
-        command[used] = '\0';
-        if (!overlong && strcmp(command, "i2c fault") == 0) {
-            *fault = true;
-            puts("I2C fixture: address 0x69\r");
-        } else if (!overlong && strcmp(command, "i2c restore") == 0) {
-            *fault = false;
-            puts("I2C fixture: address 0x68\r");
-        } else {
-            puts("ERR command\r");
-        }
+    if (desk->journal_cursor > desk->journal_stop) {
+        desk->journal_cursor = 0;
+        puts("log end\r");
+        return;
     }
-    used = 0;
-    overlong = false;
+    StageRecord record;
+    if (stage_journal_read(desk->journal_cursor++, &record)) {
+        printf("log n=%lu t_ms=%lu event=%lu\r\n", (unsigned long)record.number,
+               (unsigned long)record.uptime_ms, (unsigned long)record.event);
+    }
+}
+
+static uint32_t magnitude(int32_t value)
+{
+    return (uint32_t)(value < 0 ? -value : value);
+}
+
+static bool unstable(const StageImu *imu)
+{
+    return magnitude(imu->accel[0]) > 258U || magnitude(imu->accel[1]) > 258U ||
+           imu->accel[2] < 850 || imu->accel[2] > 1150 ||
+           magnitude(imu->gyro[0]) > 40000U || magnitude(imu->gyro[1]) > 40000U ||
+           magnitude(imu->gyro[2]) > 40000U;
+}
+
+static void update_mount(StageDesk *desk, uint32_t now)
+{
+    if (desk->mode == MOVING) {
+        return;
+    }
+    const bool bad = unstable(&desk->imu);
+    const bool candidate = desk->mode == SETTLING ? !bad : bad;
+    if (!candidate) {
+        desk->mount_streak = 0;
+        desk->mount = false;
+        return;
+    }
+    if (desk->mount_streak < 3U) {
+        ++desk->mount_streak;
+    }
+    if (desk->mount_streak == 3U && desk->mode == SETTLING) {
+        desk->mode = WAITING;
+        desk->mount_streak = 0;
+        record_event(desk, now, STAGE_WAIT);
+    } else if (desk->mount_streak == 3U && !desk->mount) {
+        desk->mount = true;
+        record_event(desk, now, STAGE_MOUNT);
+    }
 }
 
 void stage_probe_run(I2C_HandleTypeDef *bus, UART_HandleTypeDef *uart)
 {
     GPIO_InitTypeDef gpio = { .Pin = PIR_PIN, .Mode = GPIO_MODE_INPUT, .Pull = GPIO_PULLDOWN };
     HAL_GPIO_Init(GPIOA, &gpio);
-    gpio.Pin = ADC_MARK;
+    gpio.Pin = ADC_MARK | GPIO_PIN_6 | GPIO_PIN_7;
     gpio.Mode = GPIO_MODE_OUTPUT_PP;
     gpio.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOA, &gpio);
@@ -139,57 +350,80 @@ void stage_probe_run(I2C_HandleTypeDef *bus, UART_HandleTypeDef *uart)
     (void)HAL_I2C_DeInit(bus);
     stage_bus_init();
     const bool adc_ready = adc_setup();
-    StageLight light = {0};
-    StageMotion motion = {0};
-    StageImu imu = {0};
-    uint16_t raw = 0, median = 0;
-    uint32_t adc_errors = 0, i2c_at = 0, adc_at = 0, pir_at = 0, print_at = 0;
-    bool fault = false;
-    printf("StageCue lab2 | ADC=%s | PIR 10 ms | ADC 50 ms | IMU 20 ms\r\n",
-           adc_ready ? "ready" : "init-error");
+    timebase_init();
+    HAL_NVIC_SetPriority(USART2_IRQn, 1U, 0U);
+    HAL_NVIC_EnableIRQ(USART2_IRQn);
+    __HAL_UART_ENABLE_IT(uart, UART_IT_RXNE);
+
+    StageDesk desk = {0};
+    const uint32_t start = HAL_GetTick();
+    StageTask pir = {.target_ms = start, .period_ms = 10U};
+    StageTask ldr = {.target_ms = start, .period_ms = 50U};
+    StageTask imu = {.target_ms = start, .period_ms = 20U};
+    uint32_t report_at = start;
+    uint32_t retry_at = start;
+    bool imu_reported = false;
+    printf("StageCue lab3 | ADC=%s | log_last=%lu\r\n", adc_ready ? "ok" : "init-error",
+           (unsigned long)stage_journal_latest());
     for (;;) {
-        const uint32_t now = HAL_GetTick();
-        probe_command(uart, &fault);
-        if (due(now, pir_at)) {
-            pir_at = now + 10U;
-            if (stage_motion_sample(&motion, HAL_GPIO_ReadPin(GPIOA, PIR_PIN) == GPIO_PIN_SET)) {
-                printf("PIR rising t_ms=%lu\r\n", (unsigned long)now);
+        uint32_t now = HAL_GetTick();
+        if (release_task(&pir, now)) {
+            const uint16_t t = micros();
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, GPIO_PIN_SET);
+            const bool edge = stage_motion_sample(&desk.motion,
+                HAL_GPIO_ReadPin(GPIOA, PIR_PIN) == GPIO_PIN_SET);
+            const bool begin = edge && desk.mode == WAITING;
+            const bool end = desk.mode == SHOWING && due(now, desk.end_ms) && !edge;
+            if (edge && (desk.mode == WAITING || desk.mode == SHOWING)) {
+                desk.end_ms = now + 15000U;
+                desk.mode = SHOWING;
+            } else if (end) {
+                desk.mode = WAITING;
             }
-            HAL_GPIO_WritePin(Led_GPIO_Port, Led_Pin, motion.level ? GPIO_PIN_SET : GPIO_PIN_RESET);
-        }
-        if (adc_ready && due(now, adc_at)) {
-            adc_at = now + 50U;
-            if (adc_read(&raw)) {
-                median = stage_light_sample(&light, raw);
-            } else {
-                ++adc_errors;
+            const bool led = desk.mode == SHOWING &&
+                (!desk.light.dim || ((now / 250U) & 1U) == 0U);
+            HAL_GPIO_WritePin(Led_GPIO_Port, Led_Pin, led ? GPIO_PIN_SET : GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, GPIO_PIN_RESET);
+            record_duration(&pir, t);
+            if (begin || end) {
+                record_event(&desk, now, begin ? STAGE_SHOW : STAGE_WAIT);
             }
         }
-        if (due(now, i2c_at)) {
-            bool previous = imu.ready;
-            if (imu_read(&imu, fault ? MPU_ADDRESS + 1U : MPU_ADDRESS)) {
-                i2c_at = now + 20U;
-                if (!previous) {
-                    printf("IMU ready t_ms=%lu who=0x%02x\r\n", (unsigned long)now, imu.who);
+        now = HAL_GetTick();
+        if (release_task(&ldr, now)) {
+            const uint16_t t = micros();
+            if (adc_ready && adc_read(&desk.light_raw)) {
+                desk.light_median = stage_light_sample(&desk.light, desk.light_raw);
+            }
+            record_duration(&ldr, t);
+        }
+        now = HAL_GetTick();
+        if (release_task(&imu, now) && (desk.imu.ready || due(now, retry_at))) {
+            const uint16_t t = micros();
+            const bool ok = imu_read(&desk.imu, desk.fault ? MPU_ADDRESS + 1U : MPU_ADDRESS);
+            record_duration(&imu, t);
+            if (ok) {
+                if (imu_reported) {
+                    imu_reported = false;
+                    record_event(&desk, now, STAGE_IMU_BACK);
                 }
+                update_mount(&desk, now);
             } else {
-                ++imu.errors;
-                i2c_at = now + 500U;
-                if (previous || imu.errors == 1U) {
-                    printf("IMU unavailable t_ms=%lu bus=%lu\r\n",
-                           (unsigned long)now, (unsigned long)stage_bus_error());
+                desk.mount = false;
+                desk.mount_streak = 0;
+                retry_at = now + 500U;
+                if (!imu_reported) {
+                    imu_reported = true;
+                    record_event(&desk, now, STAGE_IMU_LOST);
                 }
             }
         }
-        if (due(now, print_at)) {
-            print_at = now + 1000U;
-            printf("t_ms=%lu pir=%u adc=%u median=%u dim=%u adc_err=%lu imu=%s "
-                   "a_mg=%ld,%ld,%ld g_mdps=%ld,%ld,%ld i2c_err=%lu\r\n",
-                   (unsigned long)now, motion.level, raw, median, light.dim,
-                   (unsigned long)adc_errors, imu.ready ? "ok" : "stale",
-                   (long)imu.accel[0], (long)imu.accel[1], (long)imu.accel[2],
-                   (long)imu.gyro[0], (long)imu.gyro[1], (long)imu.gyro[2],
-                   (unsigned long)imu.errors);
+        now = HAL_GetTick();
+        service_rx(&desk, now, &pir, &ldr, &imu);
+        service_log(&desk);
+        if (due(now, report_at)) {
+            report_at += 5000U;
+            status_line(&desk, now);
         }
     }
 }

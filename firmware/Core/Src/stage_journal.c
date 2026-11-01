@@ -7,7 +7,7 @@
 
 _Static_assert(sizeof(StageRecord) == 16U, "journal record layout");
 
-static uint32_t address(unsigned page, unsigned slot)
+static uintptr_t address(unsigned page, unsigned slot)
 {
     return FLASH_BASE + (JOURNAL_PAGE_0 + page) * FLASH_PAGE_SIZE +
            slot * sizeof(StageRecord);
@@ -116,7 +116,7 @@ bool stage_journal_append(uint32_t uptime_ms, enum StageEvent event)
     }
     StageRecord r = { .number = previous + 1U, .uptime_ms = uptime_ms, .event = event };
     r.seal = seal(&r);
-    const uint32_t target = address(page, slot);
+    const uintptr_t target = address(page, slot);
     if (ok) {
         const uint64_t first = ((uint64_t)r.uptime_ms << 32) | r.number;
         const uint64_t second = ((uint64_t)r.seal << 32) | r.event;
